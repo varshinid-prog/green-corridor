@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<routes>
+
+    <!-- Emergency ambulance vehicle type -->
+    <vType
+        id="ambulance"
+        vClass="emergency"
+        guiShape="emergency"
+        accel="2.6"
+        decel="4.5"
+        sigma="0"
+        length="5"
+        maxSpeed="20"
+    />
+
+    <!-- Ambulance route through the city -->
+    <route
+        id="ambulanceRoute"
+        edges="A0A1 A1B1 B1C1 C1C2"
+    />
+
+    <!-- Our first ambulance -->
+    <vehicle
+        id="AMBULANCE_01"
+        type="ambulance"
+        route="ambulanceRoute"
+        depart="0"
+        departLane="best"
+        departSpeed="max"
+    />
+
+</routes>

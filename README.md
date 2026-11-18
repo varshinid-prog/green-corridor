@@ -1,106 +1,63 @@
-# Green Corridor — Phase 1 Starter
+# Green Corridor
 
-A first runnable SUMO + Python simulation scaffold for the Green Corridor project.
+Green Corridor is a local emergency mobility command centre backed by a SUMO traffic simulation. It provides a React dashboard, a FastAPI service, network routing, a TraCI-owned simulation worker, SQLite trip/event history, and WebSocket state updates. It is a simulation and does not connect to real traffic infrastructure.
 
-**Phase 1 goal:** create a small signalised city network, populate it with civilian traffic, introduce one ambulance, and observe vehicle movement through SUMO.
+## Requirements
 
-This is a simulation only. It does not connect to or control real traffic signals.
+- Python 3.9 or newer
+- Node.js 18 or newer
+- SUMO 1.28 or compatible, including `sumo` and Python tools (`traci`, `sumolib`)
 
-## 1. Requirements
+The repository includes its generated 3×3 network and civilian routes. If you need to regenerate them, see `scripts/setup_simulation.py` and make sure `netgenerate` and `randomTrips.py` are available.
 
-- SUMO (including `sumo`, `netgenerate`, `netconvert`, and `randomTrips.py`)
-- Python 3.10+
-- Python packages: `traci`, `sumolib`
+## Start locally
 
-### Install SUMO
-
-- **macOS (Homebrew):** `brew install sumo`
-- **Ubuntu/Debian:** `sudo apt install sumo sumo-tools`
-- **Windows:** install SUMO from https://sumo.dlr.de/docs/Installing/index.html and add its `bin` and `tools` directories to your PATH / `SUMO_HOME`.
-
-Check that these commands work:
+In one terminal, from the repository root:
 
 ```bash
-sumo --version
-netgenerate --help
-```
-
-If Python cannot import `traci` or `sumolib`, set `SUMO_HOME` to your SUMO installation directory and add `$SUMO_HOME/tools` to `PYTHONPATH`.
-
-## 2. Create a Python environment
-
-```bash
-python -m venv .venv
-# macOS/Linux
+python3 -m venv .venv
 source .venv/bin/activate
-# Windows PowerShell
-# .venv\Scripts\Activate.ps1
-
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-## 3. Generate the network and traffic
+If your SUMO installation does not expose its Python modules to this environment, set `SUMO_HOME` to the SUMO installation's `share/sumo` directory. The backend also adds `$SUMO_HOME/tools` to Python's import path.
+
+In a second terminal:
 
 ```bash
-python scripts/setup_simulation.py
+cd frontend
+npm install
+npm run dev
 ```
 
-This creates:
-- `simulation/network.net.xml` — a small 3 × 3 grid network with guessed traffic lights
-- `simulation/traffic.rou.xml` — generated civilian vehicle routes
-- `simulation/green-corridor.sumocfg` — SUMO configuration
+Open <http://127.0.0.1:5173>. API documentation is at <http://127.0.0.1:8000/docs>. Use **Start simulation** in the app before dispatching an emergency.
 
-## 4. Run the simulation
+## Product sections
 
-```bash
-python run_simulation.py
-```
+- **Command centre:** Live SUMO network, vehicles, signals, active trip, and event feed.
+- **Emergency dispatch:** Select origin/destination road edges, choose severity, and create a persisted trip.
+- **Route intelligence:** Inspect the actual routed edge sequence and request a traffic-weighted recalculation.
+- **Signal management:** View the state reported for each SUMO traffic light.
+- **Analytics:** Review completed trip durations and persisted event counts. Unavailable comparisons are labelled as unavailable.
 
-Use the GUI by default. To run without the GUI:
+## Backend behavior
+
+- `SimulationManager` owns TraCI in one worker thread. API requests hand commands to that worker; WebSocket clients receive snapshots.
+- NetworkX finds a route on the directed SUMO road graph. When SUMO is running, edge weights use measured speed and vehicle count.
+- `SignalController` reads the ambulance's next controlled link from TraCI, clears active greens to yellow, holds all-red, gives the reported link priority, detects passage by outgoing edge, and resumes the normal program. The included controller currently handles one active junction priority request at a time.
+- SQLite is created at `data/green_corridor.sqlite3` and is ignored by Git.
+
+## API
+
+`GET /api/health`, `GET /api/network`, `GET /api/simulation/state`, `POST /api/simulation/start`, `POST /api/simulation/stop`, `GET /api/edges`, `POST /api/routes/preview`, `POST /api/emergencies`, `GET /api/emergencies`, `GET /api/emergencies/{id}`, `POST /api/emergencies/{id}/reroute`, `GET /api/intersections`, `GET /api/analytics`, `GET /api/events`, and `WS /ws/live`.
+
+## Compatibility launcher
+
+The standalone SUMO controller is available with:
 
 ```bash
 python run_simulation.py --nogui
 ```
 
-The script adds one ambulance after the simulation starts and asks SUMO to find a route across the network. Civilian traffic is generated from random trips.
-
-## 5. What to verify
-
-- The SUMO GUI opens.
-- Civilian vehicles enter and travel through the network.
-- A blue ambulance appears and follows a valid route.
-- The simulation completes without Python exceptions.
-
-At this stage, traffic lights use their normal SUMO signal programs. **Emergency signal preemption is not implemented yet.** That is Phase 3, after the network and TraCI connection are reliable.
-
-## Project structure
-
-```text
-green-corridor/
-├── README.md
-├── requirements.txt
-├── run_simulation.py
-├── scripts/
-│   └── setup_simulation.py
-├── simulation/
-│   └── (generated SUMO files)
-└── data/
-```
-
-## Troubleshooting
-
-### `SUMO_HOME is not set`
-Set it to your SUMO installation directory. On macOS Homebrew, it is commonly `/opt/homebrew/opt/sumo/share/sumo` on Apple Silicon or `/usr/local/opt/sumo/share/sumo` on Intel. Verify the actual path on your machine.
-
-### `netgenerate` or `randomTrips.py` not found
-Ensure the SUMO `bin` directory and SUMO `tools` directory are installed and available. `randomTrips.py` is normally inside `$SUMO_HOME/tools`.
-
-### `No route found for ambulance`
-Regenerate the network and routes, then try again. The starter selects a connected pair of edges from the generated network and uses SUMO's routing engine.
-
-### GUI does not open
-Run with `--nogui`. This checks the simulation and TraCI integration without requiring a graphical display.
-
-## Next milestone
-
-Once this runs on your machine, the next build step is a deterministic ambulance route and a Python intersection-controller state machine. We will then add safe emergency preemption (clearance phases, passage confirmation, recovery, and communication-loss fallback).
+The web backend is the normal way to operate the project.

@@ -1,158 +1,95 @@
-import traci
+"""Safe, route-aware traffic-signal priority for the SUMO demo network."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable, Optional, Tuple
+
+
+@dataclass
+class Priority:
+    tls_id: str
+    incoming: str
+    outgoing: str
+    link_indices: Tuple[int, ...]
+    stage: str
+    started_at: float
 
 
 class SignalController:
+    def __init__(self, api=None, yellow_duration: float = 3.0,
+                 all_red_duration: float = 2.0, detection_distance: float = 100.0,
+                 emit: Optional[Callable[[str, dict], None]] = None):
+        if api is None:
+            import traci as api
+        self.api = api
+        self.yellow_duration = yellow_duration
+        self.all_red_duration = all_red_duration
+        self.detection_distance = detection_distance
+        self.emit = emit or (lambda _name, _data: None)
+        self.active: Optional[Priority] = None
 
-    def __init__(self):
-        # Only intersections where our ambulance needs priority.
-        self.intersections = {
-            "B1": {
-                "link_index": 13,
-                "incoming_edge": "A1B1",
-                "outgoing_edge": "B1C1"
-            },
-            "C1": {
-                "link_index": 7,
-                "incoming_edge": "B1C1",
-                "outgoing_edge": "C1C2"
-            }
-        }
+    def _start(self, tls_id: str, incoming: str, outgoing: str, index: int, now: float) -> None:
+        state = self.api.trafficlight.getRedYellowGreenState(tls_id)
+        yellow = "".join("y" if lamp in ("G", "g") else lamp for lamp in state)
+        self.active = Priority(tls_id, incoming, outgoing, (index,), "YELLOW", now)
+        if any(lamp in ("G", "g") for lamp in state):
+            self.api.trafficlight.setRedYellowGreenState(tls_id, yellow)
+        else:
+            self.api.trafficlight.setRedYellowGreenState(tls_id, "r" * len(state))
+            self.active.stage = "ALL_RED"
+            self.active.started_at = now
+        self.emit("signal.yellow", {"intersection": tls_id, "incoming": incoming, "outgoing": outgoing})
 
-        self.normal_program = "0"
-        self.yellow_duration = 3
-        self.all_red_duration = 2
-        self.detection_distance = 80
+    def _restore(self, reason: str) -> None:
+        active = self.active
+        if active is None:
+            return
+        self.api.trafficlight.setProgram(active.tls_id, "0")
+        self.emit("signal.restored", {"intersection": active.tls_id, "reason": reason})
+        self.active = None
 
-        self.active_tls = None
-        self.stage = "IDLE"
-        self.stage_started_at = 0
-
-    def start_preemption(self, tls_id, current_time):
-
-        config = self.intersections[tls_id]
-
-        # Read the current signal state.
-        current_state = traci.trafficlight.getRedYellowGreenState(tls_id)
-
-        # Convert green movements to yellow.
-        yellow_state = ""
-
-        for light in current_state:
-            if light in ("G", "g"):
-                yellow_state += "y"
-            else:
-                yellow_state += light
-
-        self.active_tls = tls_id
-        self.stage = "YELLOW"
-        self.stage_started_at = current_time
-
-        traci.trafficlight.setRedYellowGreenState(
-            tls_id, yellow_state
-        )
-
-        print(f"\n[YELLOW] {tls_id}: clearing existing traffic")
-
-    def restore_signal(self):
-
-        tls_id = self.active_tls
-
-        if tls_id is not None:
-            traci.trafficlight.setProgram(
-                tls_id, self.normal_program
-            )
-
-            print(f"[RESTORED] {tls_id}: normal signal program resumed")
-
-        self.active_tls = None
-        self.stage = "IDLE"
-
-    def update(self, ambulance_id, current_time):
-
-        # If no priority operation is active, look for an approaching signal.
-        if self.stage == "IDLE":
-
-            if ambulance_id not in traci.vehicle.getIDList():
+    def update(self, ambulance_id: str, now: float) -> None:
+        vehicles = set(self.api.vehicle.getIDList())
+        active = self.active
+        if active is None:
+            if ambulance_id not in vehicles:
                 return
-
-            next_tls = traci.vehicle.getNextTLS(ambulance_id)
-            current_road = traci.vehicle.getRoadID(ambulance_id)
-
-            for tls_info in next_tls:
-
-                tls_id = tls_info[0]
-                distance = tls_info[2]
-
-                if tls_id not in self.intersections:
+            route = self.api.vehicle.getRoute(ambulance_id)
+            route_index = self.api.vehicle.getRouteIndex(ambulance_id)
+            incoming = self.api.vehicle.getRoadID(ambulance_id)
+            for info in self.api.vehicle.getNextTLS(ambulance_id):
+                tls_id, link_index, distance, _state = info[:4]
+                if distance > self.detection_distance or route_index + 1 >= len(route):
                     continue
-
-                config = self.intersections[tls_id]
-
-                # Only activate for the expected approach and movement.
-                if (
-                    current_road == config["incoming_edge"]
-                    and distance <= self.detection_distance
-                ):
-                    self.start_preemption(tls_id, current_time)
-                    break
-
+                outgoing = route[route_index + 1]
+                state = self.api.trafficlight.getRedYellowGreenState(tls_id)
+                index = int(link_index)
+                if 0 <= index < len(state):
+                    self._start(tls_id, incoming, outgoing, index, now)
+                    return
             return
 
-        tls_id = self.active_tls
-        config = self.intersections[tls_id]
+        if ambulance_id not in vehicles:
+            self._restore("ambulance_missing")
+            return
+        elapsed = now - active.started_at
+        if active.stage == "YELLOW" and elapsed >= self.yellow_duration:
+            state = "r" * len(self.api.trafficlight.getRedYellowGreenState(active.tls_id))
+            self.api.trafficlight.setRedYellowGreenState(active.tls_id, state)
+            active.stage, active.started_at = "ALL_RED", now
+            self.emit("signal.all_red", {"intersection": active.tls_id})
+        elif active.stage == "ALL_RED" and elapsed >= self.all_red_duration:
+            state = ["r"] * len(self.api.trafficlight.getRedYellowGreenState(active.tls_id))
+            for index in active.link_indices:
+                state[index] = "G"
+            self.api.trafficlight.setRedYellowGreenState(active.tls_id, "".join(state))
+            active.stage, active.started_at = "EMERGENCY_GREEN", now
+            self.emit("signal.priority", {"intersection": active.tls_id})
+        elif active.stage == "EMERGENCY_GREEN":
+            if self.api.vehicle.getRoadID(ambulance_id) == active.outgoing:
+                self._restore("ambulance_passed")
 
-        elapsed = current_time - self.stage_started_at
-
-        # Stage 1: hold yellow, then switch to all-red.
-        if self.stage == "YELLOW":
-
-            if elapsed >= self.yellow_duration:
-
-                all_red_state = "r" * len(
-                    traci.trafficlight.getRedYellowGreenState(tls_id)
-                )
-
-                traci.trafficlight.setRedYellowGreenState(
-                    tls_id, all_red_state
-                )
-
-                self.stage = "ALL_RED"
-                self.stage_started_at = current_time
-
-                print(f"[ALL RED] {tls_id}: intersection clearance")
-
-        # Stage 2: hold all-red, then grant ambulance priority.
-        elif self.stage == "ALL_RED":
-
-            if elapsed >= self.all_red_duration:
-
-                green_state = ["r"] * len(
-                    traci.trafficlight.getRedYellowGreenState(tls_id)
-                )
-
-                green_state[config["link_index"]] = "G"
-
-                traci.trafficlight.setRedYellowGreenState(
-                    tls_id, "".join(green_state)
-                )
-
-                self.stage = "EMERGENCY_GREEN"
-
-                print(
-                    f"[AMBULANCE GREEN] {tls_id}: "
-                    f"movement {config['link_index']} has priority"
-                )
-
-        # Stage 3: keep priority until the ambulance exits the junction.
-        elif self.stage == "EMERGENCY_GREEN":
-
-            if ambulance_id not in traci.vehicle.getIDList():
-                print("[FAILSAFE] Ambulance no longer in simulation")
-                self.restore_signal()
-                return
-
-            current_road = traci.vehicle.getRoadID(ambulance_id)
-
-            if current_road == config["outgoing_edge"]:
-                print(f"[PASSED] Ambulance crossed {tls_id}")
-                self.restore_signal()
+    def snapshot(self) -> dict:
+        active = self.active
+        return {"active_intersection": active.tls_id if active else None,
+                "stage": active.stage if active else "NORMAL"}

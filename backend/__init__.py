@@ -1,0 +1,1 @@
+"""Green Corridor application backend."""

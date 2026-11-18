@@ -20,14 +20,4 @@
         edges="A0A1 A1B1 B1C1 C1C2"
     />
 
-    <!-- Our first ambulance -->
-    <vehicle
-        id="AMBULANCE_01"
-        type="ambulance"
-        route="ambulanceRoute"
-        depart="0"
-        departLane="best"
-        departSpeed="max"
-    />
-
 </routes>

@@ -78,7 +78,7 @@ def main() -> None:
 <configuration>
     <input>
         <net-file value="{network.name}"/>
-        <route-files value="{routes.name}"/>
+        <route-files value="{routes.name},ambulance.rou.xml"/>
     </input>
     <time>
         <begin value="0"/>
